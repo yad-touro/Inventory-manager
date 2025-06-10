@@ -15,6 +15,7 @@ from app.core import oauth
 from app.core.auth.service import upsert_user
 from app.core.auth.service import AuthService
 from app import db
+from app.core.models.user import User
 
 bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 logger = logging.getLogger(__name__)
@@ -34,10 +35,10 @@ def create_jwt_token(user, expires_delta=None) -> str:
         str: JWT token
     """
     if expires_delta is None:
-        expires_delta = timedelta(hours=1)
+        expires_delta = timedelta(days=1)
         
     payload = {
-        'sub': user.id,
+        'user_id': user.id,
         'email': user.email,
         'exp': datetime.utcnow() + expires_delta,
         'iat': datetime.utcnow()
@@ -48,35 +49,25 @@ def token_required(f):
     """Decorator to require JWT token authentication."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        token = None
-        
-        # Get token from header
-        auth_header = request.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]
-        
+        token = session.get('token')
         if not token:
             return jsonify({'error': 'Token is missing'}), 401
-            
+        
         try:
-            # Decode token
             payload = jwt.decode(
                 token,
                 current_app.config['SECRET_KEY'],
                 algorithms=['HS256']
             )
-            
-            # Get user from token
-            user = User.query.get(payload['sub'])
-            if not user:
-                raise Unauthorized('User not found')
-                
+            current_user = User.query.get(payload['user_id'])
+            if not current_user:
+                return jsonify({'error': 'User not found'}), 401
         except jwt.ExpiredSignatureError:
             return jsonify({'error': 'Token has expired'}), 401
         except jwt.InvalidTokenError:
             return jsonify({'error': 'Invalid token'}), 401
-            
-        return f(user, *args, **kwargs)
+        
+        return f(current_user, *args, **kwargs)
     return decorated
 
 @bp.route("/google")
@@ -88,7 +79,7 @@ def google_login() -> Response:
 
 @bp.route("/google/callback")
 def google_callback() -> Response:
-    """Handle Google OAuth callback."""
+    """Handle Google OAuth callback and issue JWT token."""
     if not google.authorized:
         return redirect(url_for("google.login"))
 
@@ -99,7 +90,17 @@ def google_callback() -> Response:
             return redirect(url_for("auth.login_error"))
 
         info = resp.json()
-        user = upsert_user(db.session, info)
+        user = User.query.filter_by(email=info['email']).first()
+        
+        if not user:
+            user = User(
+                email=info['email'],
+                name=info.get('name', ''),
+                google_id=info['id']
+            )
+            db.session.add(user)
+            db.session.commit()
+        
         login_user(user)
         
         # Create JWT token
@@ -117,44 +118,41 @@ def google_callback() -> Response:
 
 @bp.route("/refresh", methods=["POST"])
 @token_required
-def refresh_token(user) -> Response:
-    """Refresh JWT token."""
-    token = create_jwt_token(user)
+def refresh_token(current_user) -> Response:
+    """Refresh the JWT token."""
+    token = create_jwt_token(current_user)
+    session['token'] = token
     return jsonify({"token": token})
 
 @bp.route("/logout")
 @login_required
 def logout() -> Response:
-    """Log out the current user."""
-    if 'token' in session:
-        auth = get_auth_service()
-        auth.revoke_session(session['token'])
-        session.pop('token', None)
-    
+    """Clear the session token."""
+    session.pop('token', None)
     logout_user()
     return jsonify({"message": "Logged out successfully"})
 
 @bp.route("/me")
 @token_required
-def get_current_user(user) -> Response:
+def get_current_user(current_user) -> Response:
     """Get current user info."""
     return jsonify({
-        "id": user.id,
-        "email": user.email,
-        "first_name": user.first_name,
-        "last_name": user.last_name,
-        "company_name": user.company_name,
-        "company_address": user.company_address,
-        "phone": user.phone
+        "id": current_user.id,
+        "email": current_user.email,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
+        "company_name": current_user.company_name,
+        "company_address": current_user.company_address,
+        "phone": current_user.phone
     })
 
 @bp.route("/check", methods=["GET"])
 @token_required
-def check_auth(user) -> Response:
+def check_auth(current_user) -> Response:
     """Check if user is authenticated."""
     return jsonify({
         "authenticated": True,
-        "user": user.to_dict()
+        "user": current_user.to_dict()
     })
 
 @bp.route("/login-error")

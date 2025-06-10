@@ -3,37 +3,32 @@
 import os
 import logging
 from flask import Flask
+from dotenv import load_dotenv
 from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager
 from flask_migrate import Migrate
-from flask_cors import CORS
+from flask_login import LoginManager
+from .config import BaseConfig
 
-# Initialize extensions
-db = SQLAlchemy()
-login_manager = LoginManager()
-migrate = Migrate()
+from .extensions import cors
+from .routes.main import main
+from .routes.auth import auth
+from .core.oauth import init_oauth
+from .models.user import User
+
+# Load environment variables
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Initialize extensions
+db = SQLAlchemy()
+migrate = Migrate()
+login_manager = LoginManager()
 
-def create_app(test_config=None) -> Flask:
-    """Create and configure the Flask application.
-    
-    Args:
-        test_config: Optional test configuration
-        
-    Returns:
-        Configured Flask application
-    """
+def create_app(config_object=BaseConfig):
+    """Create and configure the Flask application."""
     app = Flask(__name__, instance_relative_config=True)
-    
-    # Load configuration
-    if test_config is None:
-        app.config.from_object("app.config.Config")
-    elif isinstance(test_config, dict):
-        app.config.update(test_config)
-    else:
-        app.config.from_object(test_config)
+    app.config.from_object(config_object)
 
     # Ensure instance folder exists
     try:
@@ -41,33 +36,30 @@ def create_app(test_config=None) -> Flask:
     except OSError:
         pass
     
-    # Initialize extensions with app
+    # Initialize extensions
     db.init_app(app)
-    login_manager.init_app(app)
     migrate.init_app(app, db)
-    CORS(app)
+    login_manager.init_app(app)
+    login_manager.login_view = 'auth.login'
+    cors.init_app(app)
     
-    # Register blueprints
-    from app.api import catalog_bp, export_bp
-    from app.api.auth import bp as auth_bp
-    from app.channels.woot.routes import bp as woot_bp
-    from app.core.oauth import init_oauth, google_bp
-
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(catalog_bp)
-    app.register_blueprint(export_bp)
-    app.register_blueprint(woot_bp)
-
     # Initialize OAuth
     init_oauth(app)
 
-    # with app.app_context():
-    #     from app.core.models.base import Base
-    #     Base.metadata.create_all(db.engine)
+    # Register blueprints
+    app.register_blueprint(main)
+    app.register_blueprint(auth)
+
+    # Initialize database
+    with app.app_context():
+        db.create_all()
+        logger.info("Database tables created")
 
     # Configure logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     logger.info("Application initialized")
 
     return app 

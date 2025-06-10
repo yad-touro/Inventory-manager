@@ -4,16 +4,16 @@ Layer: core
 """
 
 import logging
-from flask import current_app, redirect, url_for
+from flask import current_app, redirect, url_for, Blueprint
 from flask_dance.contrib.google import make_google_blueprint, google
 from flask_dance.consumer import oauth_authorized, oauth_error
 from flask_dance.consumer.storage.sqla import SQLAlchemyStorage
 from sqlalchemy.orm.exc import NoResultFound
 from flask_login import current_user
-from flask_dance.contrib.google import Blueprint
 
 from app.core.models.user import User
 from app import db
+from .models import OAuth
 
 logger = logging.getLogger(__name__)
 google_bp = None
@@ -22,7 +22,37 @@ __all__ = ["google", "google_bp", "create_google_bp", "init_oauth"]
 # Stub for google_bp to satisfy import in tests/conftest.py
 google_bp = None
 
-def create_google_bp() -> Blueprint:
+def create_google_bp():
+    """Create and configure the Google OAuth blueprint."""
+    google_bp = make_google_blueprint(
+        client_id=current_app.config['GOOGLE_CLIENT_ID'],
+        client_secret=current_app.config['GOOGLE_CLIENT_SECRET'],
+        scope=[
+            'openid',
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
+            'https://www.googleapis.com/auth/drive.file',
+            'https://www.googleapis.com/auth/spreadsheets'
+        ],
+        storage=SQLAlchemyStorage(OAuth, current_app.extensions['sqlalchemy'].db.session)
+    )
+    return google_bp
+
+def init_oauth(app):
+    """Initialize OAuth with the Flask application."""
+    from flask_dance.consumer import oauth_error
+    
+    @oauth_error.connect_via(google)
+    def google_error(blueprint, message, response):
+        """Handle OAuth errors."""
+        app.logger.error(f"OAuth error from {blueprint.name}: {message}")
+        return {"error": "OAuth error", "message": message}, 400
+
+    # Register the Google blueprint
+    google_bp = create_google_bp()
+    app.register_blueprint(google_bp, url_prefix='/login')
+
+def create_google_bp() -> 'Blueprint':
     """Create and configure the Google OAuth blueprint.
     
     Returns:

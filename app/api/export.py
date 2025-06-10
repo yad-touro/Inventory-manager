@@ -8,6 +8,8 @@ from app.core.services.sheets import SheetsService
 from app.core.services.drive import DriveService
 from app.core.models.product import MasterProduct, InventoryRecord
 from app import db
+import csv
+import io
 
 bp = Blueprint('export', __name__, url_prefix='/api/export')
 
@@ -61,16 +63,24 @@ def export_products_to_drive() -> Response:
     
     session = db.session
     products = session.query(MasterProduct).all()
-    data = [product.to_dict() for product in products]
+    product_data = [product.to_dict() for product in products]
     
-    # TODO: Convert data to CSV
-    csv_data = "TODO: Convert to CSV"
+    # Convert data to CSV
+    output = io.StringIO()
+    if product_data:
+        writer = csv.DictWriter(output, fieldnames=product_data[0].keys())
+        writer.writeheader()
+        writer.writerows(product_data)
+    
+    # Create a temporary file with the CSV data
+    temp_file = io.BytesIO(output.getvalue().encode('utf-8'))
+    temp_file.name = filename  # Set the filename for the upload
     
     drive_service = DriveService(None)  # TODO: Get credentials from config
     file = drive_service.upload_file(
-        file_path=csv_data,
+        file_path=temp_file,
         mime_type='text/csv',
-        name=filename
+        parents=[folder_id]
     )
     
     return jsonify({'message': 'Export completed successfully', 'file_id': file['id']}) 
